@@ -1,0 +1,144 @@
+services:
+  base: &base
+    image: chatwoot/chatwoot:v4.17.0
+    env_file: .env
+    volumes:
+      - ./storage:/app/storage
+      - ./branding/logos/logo.png:/app/public/brand-assets/logo.png:ro
+      - ./branding/logos/logo-dark.png:/app/public/brand-assets/logo-dark.png:ro
+      - ./branding/logos/logo-thumbnail.png:/app/public/brand-assets/logo-thumbnail.png:ro
+      - ./branding/favicons/favicon-16x16.png:/app/public/favicon-16x16.png:ro
+      - ./branding/favicons/favicon-16x16.png:/app/public/favicon-16x16.png:ro
+      - ./branding/favicons/favicon-32x32.png:/app/public/favicon-32x32.png:ro
+      - ./branding/favicons/favicon-96x96.png:/app/public/favicon-96x96.png:ro
+      - ./branding/favicons/apple-icon-57x57.png:/app/public/apple-icon-57x57.png:ro
+      - ./branding/favicons/apple-icon-60x60.png:/app/public/apple-icon-60x60.png:ro
+      - ./branding/favicons/apple-icon-72x72.png:/app/public/apple-icon-72x72.png:ro
+      - ./branding/favicons/apple-icon-76x76.png:/app/public/apple-icon-76x76.png:ro
+      - ./branding/favicons/apple-icon-114x114.png:/app/public/apple-icon-114x114.png:ro
+      - ./branding/favicons/apple-icon-120x120.png:/app/public/apple-icon-120x120.png:ro
+      - ./branding/favicons/apple-icon-144x144.png:/app/public/apple-icon-144x144.png:ro
+      - ./branding/favicons/apple-icon-152x152.png:/app/public/apple-icon-152x152.png:ro
+      - ./branding/favicons/apple-icon-180x180.png:/app/public/apple-icon-180x180.png:ro
+      - ./branding/favicons/android-icon-192x192.png:/app/public/android-icon-192x192.png:ro
+      - ./branding/favicons/ms-icon-144x144.png:/app/public/ms-icon-144x144.png:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+    networks:
+      - traefik_net
+      - chatwoot_network
+
+  rails:
+    <<: *base
+    container_name: chatwoot_rails
+    depends_on:
+      - postgres_chatwoot
+      - redis
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    entrypoint: docker/entrypoints/rails.sh
+    command: ['bundle', 'exec', 'rails', 's', '-p', '3000', '-b', '0.0.0.0']
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_net"
+      # Router HTTPS
+      - "traefik.http.routers.chatwoot.rule=Host(`chatwoot.elemensoft.com`)"
+      - "traefik.http.routers.chatwoot.entrypoints=websecure"
+      - "traefik.http.routers.chatwoot.tls.certresolver=letsencrypt"
+      # Router HTTP con redirect 
+      - "traefik.http.routers.chatwoot-http.rule=Host(`chatwoot.elemensoft.com`)"
+      - "traefik.http.routers.chatwoot-http.entrypoints=web"
+      - "traefik.http.routers.chatwoot-http.middlewares=redirect-to-https"
+      # Middleware Redirect 
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+      # Service
+      - "traefik.http.services.chatwoot.loadbalancer.server.port=3000"
+      # Routers y Middlewares combinados correctamente
+      - "traefik.http.routers.chatwoot.middlewares=chatwoot-headers,redirect-to-https"
+      - "traefik.http.middlewares.chatwoot-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.chatwoot-headers.headers.customrequestheaders.X-Forwarded-Ssl=on"
+
+  sidekiq:
+    <<: *base
+    container_name: chatwoot_sidekiq
+    depends_on:
+      - postgres_chatwoot
+      - redis
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    restart: always
+    networks:
+      - chatwoot_network
+    deploy:
+      resources:
+        limits:
+          memory: 800M
+        reservations:
+          memory: 400M
+
+  postgres_chatwoot:
+    image: pgvector/pgvector:pg16
+    container_name: postgres_chatwoot
+    restart: always
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=chatwoot_production
+      - POSTGRES_USER=chatwoot_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    networks:
+      chatwoot_network:
+        aliases:
+          - postgres_chatwoot
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  redis:
+    image: redis:alpine
+    container_name: chatwoot_redis
+    restart: always
+    command: ["sh", "-c", "redis-server --requirepass \"$REDIS_PASSWORD\""]
+    env_file: .env
+    volumes:
+      - ./redis_data:/data
+    ports:
+      - '127.0.0.1:6380:6379'
+    networks:
+      - chatwoot_network
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+        reservations:
+          memory: 100M
+
+networks:
+  chatwoot_network:
+    driver: bridge
+  traefik_net:
+    external: true
+    name: traefik_net
+
+volumes:
+  storage:
+  postgres_data:
+  redis_data:
